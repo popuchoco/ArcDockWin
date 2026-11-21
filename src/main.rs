@@ -35,7 +35,7 @@ use tiny_skia::Pixmap;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, HDC, HGDIOBJ, SelectObject,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, HDC, HGDIOBJ, ScreenToClient, SelectObject,
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute};
 use windows::core::BOOL;
@@ -99,6 +99,9 @@ struct Dock {
     pos: POINT,
     /// Posição x do mouse usada no zoom.
     mx: f32,
+    /// Alvo real do cursor; a posição usada no zoom acompanha este alvo com suavização.
+    mx_target: f32,
+    mouse_step: Instant,
     /// Intensidade do zoom (0..1), animada de `hover_from` até `target`.
     hover: f32,
     target: f32,
@@ -162,6 +165,8 @@ impl Dock {
                 bits: bits as *mut u8,
                 pos: POINT { x: 0, y: screen_h - h },
                 mx: 0.0,
+                mx_target: 0.0,
+                mouse_step: Instant::now(),
                 hover: 0.0,
                 target: 0.0,
                 hover_from: 0.0,
@@ -334,6 +339,13 @@ impl Dock {
     fn step(&mut self) {
         let now = Instant::now();
 
+        // Suaviza os pequenos saltos dos eventos de mouse sem introduzir atraso acumulado.
+        let dt = now.saturating_duration_since(self.mouse_step).as_secs_f32().min(0.05);
+        self.mouse_step = now;
+        let follow = 1.0 - (-dt / 0.045).exp();
+        self.mx += (self.mx_target - self.mx) * follow;
+        let mouse_settling = (self.mx_target - self.mx).abs() > 0.25;
+
         // Entrada/saída do zoom: duração fixa, recomeça do ponto atual se o alvo mudar no meio.
         let th = ((now - self.hover_start).as_secs_f32() / HOVER_TIME).min(1.0);
         self.hover = self.hover_from + (self.target - self.hover_from) * ease_out_quad(th);
@@ -344,7 +356,7 @@ impl Dock {
         let t = ((now - self.slide_start).as_secs_f32() / SLIDE_TIME).min(1.0);
         self.slide = self.slide_from + (self.slide_target - self.slide_from) * ease(t);
 
-        let settling = self.drag_step();
+        let settling = self.drag_step() || mouse_settling;
         if th >= 1.0 && t >= 1.0 && !attention::bouncing() && !settling {
             self.animating = false;
         }
@@ -762,8 +774,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_MOUSEMOVE => {
                 with_dock(|d| {
-                    // O zoom segue o mouse na hora, sem suavização.
-                    d.mx = mouse_x(lp);
+                    d.mx_target = mouse_x(lp);
+                    // O ícone arrastado deve continuar colado ao cursor.
+                    if d.drag.busy() {
+                        d.mx = d.mx_target;
+                    } else if (d.mx_target - d.mx).abs() > 0.25 {
+                        d.start_anim();
+                    }
                     if !d.tracking {
                         d.tracking = true;
                         let mut tme = TRACKMOUSEEVENT {
@@ -774,7 +791,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         };
                         let _ = TrackMouseEvent(&mut tme);
                     }
-                    d.drag_move(d.mx, mouse_y(lp));
+                    d.drag_move(d.mx_target, mouse_y(lp));
                     d.set_hover(1.0);
                     if !d.animating {
                         d.redraw();
@@ -791,6 +808,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                     d.set_hover(0.0);
                 });
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                // A wheel scroll over a grouped app cycles through that app's windows.
+                let mut point = POINT {
+                    x: (lp.0 & 0xffff) as i16 as i32,
+                    y: ((lp.0 >> 16) & 0xffff) as i16 as i32,
+                };
+                let _ = ScreenToClient(hwnd, &mut point);
+                let windows = with_dock(|d| {
+                    let i = d.hit(point.x as f32)?;
+                    let app = d.apps.get(i)?;
+                    (app.windows.len() > 1).then(|| app.windows.clone())
+                })
+                .flatten();
+                if let Some(windows) = windows {
+                    apps::cycle_window(&windows, (wp.0 >> 16) as i16 >= 0);
+                    with_dock(|d| d.redraw());
+                }
                 LRESULT(0)
             }
             WM_TIMER => {

@@ -425,6 +425,30 @@ pub fn activate(source: &str, windows: &[HWND]) {
     }
 }
 
+/// Scroll through one app's open windows, restoring a minimized target when needed.
+pub fn cycle_window(windows: &[HWND], forward: bool) {
+    if windows.len() < 2 {
+        return;
+    }
+    unsafe {
+        let fg = GetForegroundWindow();
+        let current = if let Some(i) = windows.iter().position(|&h| h == fg) {
+            Some(i)
+        } else {
+            let order = z_order(windows);
+            order
+                .iter()
+                .copied()
+                .find(|&h| !IsIconic(h).as_bool())
+                .or_else(|| order.first().copied())
+                .and_then(|h| windows.iter().position(|&w| w == h))
+        };
+        let Some(i) = current else { return };
+        let next = if forward { (i + 1) % windows.len() } else { (i + windows.len() - 1) % windows.len() };
+        focus_window(windows[next]);
+    }
+}
+
 /// Traz a janela para frente, restaurando se estiver minimizada.
 pub fn focus_window(hwnd: HWND) {
     unsafe {

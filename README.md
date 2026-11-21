@@ -20,6 +20,7 @@ substituir a barra de tarefas do Windows no dia a dia.
 ### Dock
 - Vidro desfocado de verdade (o que está atrás aparece borrado), cantos arredondados e sombra suave.
 - Ampliação dos ícones ao passar o mouse e pontinho embaixo dos apps abertos.
+- Ampliação com movimento suavizado para evitar oscilações; a roda do mouse sobre um app com várias janelas alterna entre elas.
 - **Ícone pulando** quando um app pede atenção, com um pontinho vermelho até você abrir o app.
 - **Arrastar para reordenar**: solte um app aberto entre os fixados para fixar, ou arraste para cima para desafixar.
   O lançador fica sempre como último app.
